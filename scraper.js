@@ -203,7 +203,6 @@ async function processThreadMessages(parentId) {
     return threadMessages;
 }
 
-
 async function processVideos(msgElement, msgId) {
     let videos = [];
 
@@ -254,24 +253,41 @@ async function processVideos(msgElement, msgId) {
             return videos;
         }
 
+        // Tunggu panel file details muncul
         await page.waitForSelector('.p-view_contents.p-view_contents--secondary', { visible: true });
         console.log("Panel File details telah muncul.");
 
+        // Ambil elemen link download
         const downloadLinkEl = await page.$('a[data-qa="download_action"]');
         if (!downloadLinkEl) {
             console.log("Link download tidak ditemukan.");
         } else {
-            const downloadUrl = await downloadLinkEl.evaluate(el => el.href);
+            let downloadUrl = await downloadLinkEl.evaluate(el => el.getAttribute('href'));
             console.log("Link download ditemukan:", downloadUrl);
 
-            if (downloadUrl && downloadUrl.startsWith('https://')) {
-                let videoName = sanitizeFilename(`${msgId}_${path.basename(downloadUrl.split("?")[0])}`);
+            // Hapus parameter ?origin_team=T084BP64JFR jika ada
+            // Cara 1: Menggunakan URL object
+            try {
+                const urlObj = new URL(downloadUrl);
+                urlObj.searchParams.delete('origin_team');
+                downloadUrl = urlObj.toString();
+            } catch (e) {
+                // Jika gagal pakai URL, coba string replace sederhana
+                downloadUrl = downloadUrl.replace(/\?origin_team=[^&]+/, '');
+            }
+
+            console.log("Link download setelah dihapus origin_team:", downloadUrl);
+
+            // Cek ekstensi video
+            const videoExtensionRegex = /\.(mp4|mov|m4v|webm|avi|mkv)$/i;
+            if (downloadUrl && downloadUrl.startsWith('https://') && videoExtensionRegex.test(downloadUrl)) {
+                let videoName = sanitizeFilename(`${msgId}_${path.basename(downloadUrl)}`);
                 console.log(`Mengunduh video: ${downloadUrl}`);
                 await downloadFileWithCookies(downloadUrl, path.join(VIDEOS_DIR, videoName));
                 videos.push(videoName);
                 console.log("Video berhasil diunduh:", videoName);
             } else {
-                console.log("URL download tidak valid atau tidak dimulai dengan https://");
+                console.log("Tidak terdeteksi sebagai video (ekstensi tidak cocok atau URL tidak valid). Lewati.");
             }
         }
 
@@ -294,6 +310,7 @@ async function processVideos(msgElement, msgId) {
 
     return videos;
 }
+
 
 async function processMessageElement(msgElement, processedIds) {
     const msgId = await msgElement.evaluate(el => el.getAttribute('id')) || "";
