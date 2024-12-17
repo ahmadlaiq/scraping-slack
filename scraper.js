@@ -1,7 +1,7 @@
 const fs = require("fs-extra");
 const path = require("path");
-const axios = require("axios");
 const puppeteer = require("puppeteer");
+const axios = require("axios");
 
 const SLACK_URL = "https://app.slack.com/client/T084BP64JFR/C084PE1MWLD";
 const DATA_DIR = path.join(__dirname, "data");
@@ -25,26 +25,27 @@ function sanitizeFilename(filename) {
     return filename.replace(/[^a-z0-9.\-]/gi, "_").toLowerCase();
 }
 
-async function downloadFile(url, filepath) {
+async function getCookiesHeader() {
+    const cookies = await page.cookies();
+    const cookieHeader = cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+    return cookieHeader;
+}
+
+async function downloadFileWithCookies(url, filepath) {
     try {
-        console.log(`Mengunduh file dari: ${url}`);
-        const response = await axios({
-            url,
-            method: "GET",
-            responseType: "stream"
+        console.log(`Mengunduh file dengan cookies: ${url}`);
+        const cookieHeader = await getCookiesHeader();
+
+        const response = await axios.get(url, {
+            responseType: 'arraybuffer',
+            headers: {
+                'Cookie': cookieHeader
+            },
+            timeout: 1800000 // 30 menit jika perlu
         });
 
-        await new Promise((resolve, reject) => {
-            response.data.pipe(fs.createWriteStream(filepath))
-                .on("finish", () => {
-                    console.log(`File disimpan di: ${filepath}`);
-                    resolve();
-                })
-                .on("error", err => {
-                    console.error(`Error menyimpan file di ${filepath}:`, err.message);
-                    reject(err);
-                });
-        });
+        await fs.writeFile(filepath, response.data);
+        console.log(`File disimpan di: ${filepath}`);
     } catch (error) {
         console.error(`Gagal mengunduh file dari ${url}:`, error.message);
     }
@@ -57,8 +58,11 @@ async function initBrowser() {
         defaultViewport: null,
         args: ['--start-maximized'],
         userDataDir: path.join(__dirname, "chrome-user-data"),
+        protocolTimeout: 1800000 , // Increase to 30 minutes
     });
     page = await browser.newPage();
+    page.setDefaultTimeout(1800000);
+    page.setDefaultNavigationTimeout(1800000);
     console.log("Puppeteer berhasil diinisialisasi.");
 }
 
@@ -138,7 +142,6 @@ async function processThreadMessages(parentId) {
         return threadMessages;
     }
 
-    // Ambil semua pesan dari thread
     const threadMessageElements = await threadContainer.$$('[id*="thread-list-Thread_"]');
     for (let tMsgEl of threadMessageElements) {
         const tMsgId = await tMsgEl.evaluate(el => el.getAttribute('id'));
@@ -156,17 +159,19 @@ async function processThreadMessages(parentId) {
             regularMessage = (await contentElement.evaluate(el => el.innerText)).trim();
         }
 
+        // Ambil gambar
         let images = [];
         const imageLinkElements = await tMsgEl.$$('[data-qa="message_file_image_thumbnail"]');
         for (let linkEl of imageLinkElements) {
             const imageUrl = await linkEl.evaluate(el => el.getAttribute('href'));
             if (imageUrl) {
                 let imageName = sanitizeFilename(`${threadMsgId}_${path.basename(imageUrl.split("?")[0])}`);
-                await downloadFile(imageUrl, path.join(__dirname, 'data', 'images', imageName));
+                await downloadFileWithCookies(imageUrl, path.join(IMAGES_DIR, imageName));
                 images.push(imageName);
             }
         }
 
+        // Ambil emotes
         let emotes = [];
         if (contentElement) {
             const emoteElements = await contentElement.$$("img[alt^=':']:not([alt=''])");
@@ -176,6 +181,9 @@ async function processThreadMessages(parentId) {
             }
         }
 
+        // Ambil video dengan logika yang sama dengan pesan utama
+        let videos = await processVideos(tMsgEl, threadMsgId);
+
         let threadMessageObj = {
             id: threadMsgId,
             id_root: parentId,
@@ -183,7 +191,7 @@ async function processThreadMessages(parentId) {
             timestamp,
             regular_message: regularMessage,
             images,
-            videos: [],
+            videos,
             emotes,
             threads: []
         };
@@ -195,11 +203,11 @@ async function processThreadMessages(parentId) {
     return threadMessages;
 }
 
+
 async function processVideos(msgElement, msgId) {
     let videos = [];
 
     try {
-        // Cek apakah ada overlay video
         const videoOverlay = await msgElement.$('.p-video_controls_overlay');
         if (!videoOverlay) {
             console.log(`Tidak ada video pada pesan ID: ${msgId}.`);
@@ -208,15 +216,10 @@ async function processVideos(msgElement, msgId) {
 
         console.log(`Video terdeteksi pada pesan ID: ${msgId}. Mencoba memunculkan menu more actions...`);
 
-        // Hover untuk memastikan overlay terlihat
         await videoOverlay.hover();
-        
-        // Tunggu sejenak agar elemen muncul
         await new Promise(resolve => setTimeout(resolve, 1000));
         
-        // Coba cari tombol more actions
         const moreActionsBtn = await videoOverlay.$('.c-button-unstyled.c-icon_button.c-icon_button--size_medium.p-video_message_file__controls_overlay_ellipsis.c-icon_button--dark');
-
         console.log("Hasil pencarian tombol more actions:", moreActionsBtn);
 
         if (!moreActionsBtn) {
@@ -224,15 +227,12 @@ async function processVideos(msgElement, msgId) {
             return videos;
         }
 
-        // Klik tombol more actions
         await moreActionsBtn.click();
         console.log("Tombol More actions berhasil diklik!");
 
-        // Tunggu modal muncul (menunggu container menu)
         await page.waitForSelector('.c-menu__items', { visible: true });
         console.log("Modal menu actions telah muncul.");
 
-        // Cari semua tombol menu
         const menuButtons = await page.$$('.c-menu_item__button');
         let viewDetailsFound = false;
 
@@ -254,11 +254,9 @@ async function processVideos(msgElement, msgId) {
             return videos;
         }
 
-        // Tunggu panel "File details" muncul
         await page.waitForSelector('.p-view_contents.p-view_contents--secondary', { visible: true });
         console.log("Panel File details telah muncul.");
 
-        // Cari link download
         const downloadLinkEl = await page.$('a[data-qa="download_action"]');
         if (!downloadLinkEl) {
             console.log("Link download tidak ditemukan.");
@@ -269,7 +267,7 @@ async function processVideos(msgElement, msgId) {
             if (downloadUrl && downloadUrl.startsWith('https://')) {
                 let videoName = sanitizeFilename(`${msgId}_${path.basename(downloadUrl.split("?")[0])}`);
                 console.log(`Mengunduh video: ${downloadUrl}`);
-                await downloadFile(downloadUrl, path.join(VIDEOS_DIR, videoName));
+                await downloadFileWithCookies(downloadUrl, path.join(VIDEOS_DIR, videoName));
                 videos.push(videoName);
                 console.log("Video berhasil diunduh:", videoName);
             } else {
@@ -277,7 +275,6 @@ async function processVideos(msgElement, msgId) {
             }
         }
 
-        // Tutup panel
         const closeBtn = await page.$('button[data-qa="close_flexpane"]');
         if (closeBtn) {
             await closeBtn.click();
@@ -297,8 +294,6 @@ async function processVideos(msgElement, msgId) {
 
     return videos;
 }
-
-
 
 async function processMessageElement(msgElement, processedIds) {
     const msgId = await msgElement.evaluate(el => el.getAttribute('id')) || "";
@@ -325,7 +320,7 @@ async function processMessageElement(msgElement, processedIds) {
         const imageUrl = await linkEl.evaluate(el => el.getAttribute('href'));
         if (imageUrl) {
             let imageName = sanitizeFilename(`${msgId}_${path.basename(imageUrl.split("?")[0])}`);
-            await downloadFile(imageUrl, path.join(IMAGES_DIR, imageName));
+            await downloadFileWithCookies(imageUrl, path.join(IMAGES_DIR, imageName));
             images.push(imageName);
         }
     }
@@ -348,7 +343,7 @@ async function processMessageElement(msgElement, processedIds) {
         console.log("Thread button diklik, menunggu 5 detik sebelum memproses thread...");
         await new Promise(resolve => setTimeout(resolve, 5000));
         threads = await processThreadMessages(msgId);
-        await closeAllPanels(); // Tutup setelah thread selesai diproses
+        await closeAllPanels();
     }
 
     let messageObj = {
