@@ -58,7 +58,7 @@ async function initBrowser() {
         defaultViewport: null,
         args: ['--start-maximized'],
         userDataDir: path.join(__dirname, "chrome-user-data"),
-        protocolTimeout: 1800000 , // Increase to 30 minutes
+        protocolTimeout: 1800000, // Increase to 30 minutes
     });
     page = await browser.newPage();
     page.setDefaultTimeout(1800000);
@@ -78,7 +78,7 @@ async function loginAndNavigate() {
     const channelSelector = '[data-qa-channel-sidebar-channel-id="C084PE1MWLD"]';
     await page.waitForSelector(channelSelector, { visible: true });
     await page.click(channelSelector);
-    await new Promise(resolve => setTimeout(resolve, 5000)); 
+    await new Promise(resolve => setTimeout(resolve, 5000));
     console.log("Berhasil menuju channel yang diinginkan.");
 }
 
@@ -86,16 +86,16 @@ async function closeAllPanels() {
     console.log("Menutup semua panel...");
     for (let i = 0; i < 3; i++) {
         await page.keyboard.press('Escape');
-        await new Promise(resolve => setTimeout(resolve, 500)); 
+        await new Promise(resolve => setTimeout(resolve, 500));
     }
-    
+
     let closeBtnExists = true;
     while (closeBtnExists) {
         const closeBtns = await page.$$('button[data-qa="close_flexpane"]');
         if (closeBtns.length > 0) {
             for (const btn of closeBtns) {
-                await btn.click().catch(() => {});
-                await new Promise(resolve => setTimeout(resolve, 500)); 
+                await btn.click().catch(() => { });
+                await new Promise(resolve => setTimeout(resolve, 500));
             }
         } else {
             closeBtnExists = false;
@@ -110,7 +110,7 @@ async function scrollToBottom() {
         const el = document.querySelector('div[class^="c-virtual"]');
         if (el) el.scrollTop = el.scrollHeight;
     });
-    await new Promise(resolve => setTimeout(resolve, 2000)); 
+    await new Promise(resolve => setTimeout(resolve, 2000));
     console.log("Diperkirakan telah mencapai dasar chat.");
 }
 
@@ -119,9 +119,9 @@ async function scrollUpMultipleTimes(times = 15) {
     for (let i = 0; i < times; i++) {
         await page.evaluate(() => {
             const el = document.querySelector('div[class^="c-virtual"]');
-            if (el) el.scrollTop = el.scrollTop - 2000; 
+            if (el) el.scrollTop = el.scrollTop - 2000;
         });
-        await new Promise(resolve => setTimeout(resolve, 1000)); 
+        await new Promise(resolve => setTimeout(resolve, 1000));
     }
     console.log("Selesai scroll ke atas.");
 }
@@ -150,7 +150,13 @@ async function processThreadMessages(parentId) {
         const threadMsgId = match[1];
         if (processedThreadIds.has(threadMsgId)) continue;
 
-        const username = await tMsgEl.$eval(".c-message__sender, .c-message_kit__sender", el => el.innerText).catch(() => "Unknown");
+        let username = await tMsgEl.$eval(
+            'span.offscreen[data-qa^="aria-labelledby-primary-"]',
+            el => el.innerText
+          ).catch(() => "Unknown");
+        if (username.includes('\n')) {
+            username = username.split('\n')[0].trim();
+        }
         const timestamp = await tMsgEl.$eval("a.c-timestamp", el => el.getAttribute("aria-label")).catch(() => "Unknown");
 
         let regularMessage = "";
@@ -217,7 +223,7 @@ async function processVideos(msgElement, msgId) {
 
         await videoOverlay.hover();
         await new Promise(resolve => setTimeout(resolve, 1000));
-        
+
         const moreActionsBtn = await videoOverlay.$('.c-button-unstyled.c-icon_button.c-icon_button--size_medium.p-video_message_file__controls_overlay_ellipsis.c-icon_button--dark');
         console.log("Hasil pencarian tombol more actions:", moreActionsBtn);
 
@@ -322,7 +328,13 @@ async function processMessageElement(msgElement, processedIds) {
         return null;
     }
 
-    const username = await msgElement.$eval(".c-message__sender, .c-message_kit__sender", el => el.innerText).catch(() => "Unknown");
+    let username = await msgElement.$eval(
+        'span.offscreen[data-qa^="aria-labelledby-primary-"]',
+        el => el.innerText
+      ).catch(() => "Unknown");
+    if (username.includes('\n')) {
+        username = username.split('\n')[0].trim();
+    }
     const timestamp = await msgElement.$eval("a.c-timestamp", el => el.getAttribute("aria-label")).catch(() => "Unknown");
 
     let regularMessage = "";
